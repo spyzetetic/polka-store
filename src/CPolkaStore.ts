@@ -234,6 +234,9 @@ export class CPolkaStore {
   // --------------------------------------------------------------
   // process block events
   private async ProcessStakingSlashEvents(data: TBlockData, onIF: IOnInitializeOrFinalize): Promise<void> {
+
+    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.parentHash);
+
     onIF.events.forEach((ev: ISanitizedEvent, index: number) => {
       if (ev.method == 'staking.Slash' || ev.method == 'staking.Slashed') {   // staking.Slashed from runtime 9090
 
@@ -287,6 +290,33 @@ export class CPolkaStore {
         };
 
         data.txs.push(tx1);
+      }
+
+      if (ev.method == 'balances.Deposit' && ev.data[0].toString() == data.block.authorId?.toString()) {
+        const tx: TTransaction = {
+          chain: data.db.chain,
+          id: data.block.number + '_onInitialize_ev' + index,
+          height: data.blockNr,
+          blockHash: data.block.hash.toString(),
+          type: 'balances.transfer',
+          subType: undefined,
+          event: undefined,
+          addData: undefined,
+          timestamp: GetTime(data.block.extrinsics),
+          specVersion: ver.specVersion.toNumber(),
+          transactionVersion: ver.transactionVersion.toNumber(),
+          authorId: data.block.authorId?.toString(),
+          senderId: undefined,
+          recipientId: undefined,
+          amount: undefined,
+          totalFee: BigInt(ev.data[1].toString()),
+          feeBalances: BigInt(ev.data[1].toString()),
+          feeTreasury: BigInt(0),
+          tip: BigInt(0),
+          success: 1
+        };
+
+        data.txs.push(tx);
       }
     });
   }
