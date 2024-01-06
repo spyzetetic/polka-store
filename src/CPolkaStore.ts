@@ -883,7 +883,7 @@ export class CPolkaStore {
 
       const ev = ex.events[i];
 
-      if (ev.method == 'ump.ExecutedUpward')    // end of current block
+      if (ev.method == 'ump.ExecutedUpward' || ev.method == 'balances.Withdraw')    // end of current block
         break;
 
       if (ev.method == 'balances.Deposit' && ev.data[0].toString() != authorId) {  // ignore the fee for block author
