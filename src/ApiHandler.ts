@@ -1,3 +1,6 @@
+// Added by spy@zetetic
+import type { PalletStakingStakingLedger, PalletStakingRewardDestination } from '@polkadot/types/lookup';
+
 import { ApiPromise, WsProvider } from '@polkadot/api';
 import { ApiDecoration } from '@polkadot/api/types';
 import { Struct, StorageKey, bool, Null, u128 } from '@polkadot/types';
@@ -301,7 +304,7 @@ export default class ApiHandler {
 
     const [
       stakingLedgerOption,
-      rewardDestination,
+      rewardDestinationRaw,
       slashingSpansOption,
     ] = await Promise.all([
       apiAt.query.staking.ledger(controller),
@@ -309,6 +312,10 @@ export default class ApiHandler {
       apiAt.query.staking.slashingSpans(stash),
     ]);
 
+    // Added 
+    const rewardDestination = rewardDestinationRaw?.isSome ? rewardDestinationRaw.unwrap() : rewardDestinationRaw;
+    const typedRewardDestination = rewardDestination as PalletStakingRewardDestination;
+    
     const stakingLedger = stakingLedgerOption.unwrapOr(null);
 
     if (stakingLedger === null) {
@@ -323,7 +330,7 @@ export default class ApiHandler {
     return {
       at,
       controller,
-      rewardDestination,
+      rewardDestination: typedRewardDestination,
       numSlashingSpans,
       staking: stakingLedger,
     };

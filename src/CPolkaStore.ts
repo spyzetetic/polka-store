@@ -1,3 +1,7 @@
+//Added by spy
+import type { PalletStakingRewardDestination } from '@polkadot/types/lookup';
+
+
 import { ApiPromise } from '@polkadot/api';
 import { ApiDecoration } from '@polkadot/api/types';
 import { Compact, Option } from '@polkadot/types';
@@ -108,18 +112,18 @@ export class CPolkaStore {
     if (!this._api || !this._db)
       return;
 
+
+    //REMOVE TEST CODE
     const maxBlock = this._db.GetMaxHeight();
-
-console.log(maxBlock.toString());
-
+    console.log(maxBlock.toString());
     const lastBlock = await this.LastBlock();
     const LogBlock = new CLogBlockNr(this._api, lastBlock);
 
     // scan the chain and write block data to database
-    const start = Math.max(maxBlock, this._chainData.startBlock);
-//    const start = 19585856;
-//    for (let i = start; i <= LogBlock.LastBlock(); i++) {
-    for (let i = start; i <= 22612381; i++) {
+//    const start = Math.max(maxBlock, this._chainData.startBlock);
+    const start = 331000; //REMOVE TEST CODE
+    for (let i = start; i <= LogBlock.LastBlock(); i++) {
+//    for (let i = start; i <= 19550999; i++) { //REMOVE TEST CODE
       await this.ProcessBlockData(i);
       LogBlock.LogBlock(this._errors, i, i == LogBlock.LastBlock());
     }
@@ -238,9 +242,10 @@ console.log(maxBlock.toString());
 
   // --------------------------------------------------------------
   // process block events
+  // Name of function might need to be generalised if it handles different event methods - spy@zetetic
   private async ProcessStakingSlashEvents(data: TBlockData, onIF: IOnInitializeOrFinalize): Promise<void> {
 
-    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.parentHash);
+    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.hash);
 
     onIF.events.forEach((ev: ISanitizedEvent, index: number) => {
       if (ev.method == 'staking.Slash' || ev.method == 'staking.Slashed') {   // staking.Slashed from runtime 9090
@@ -297,6 +302,7 @@ console.log(maxBlock.toString());
         data.txs.push(tx1);
       }
 
+      // Need to handle fees for the block author and treasury for when processing any balance deposits events that occur. spy@zetetic
       if (ev.method == 'balances.Deposit' && ev.data[0].toString() == data.block.authorId?.toString()) {
         const tx: TTransaction = {
           chain: data.db.chain,
@@ -329,7 +335,9 @@ console.log(maxBlock.toString());
   // --------------------------------------------------------------
   // process general extrinsics
   private async ProcessExtrinsics(data: TBlockData): Promise<void> {
-    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.parentHash); // get runtime version of the block
+    // WHY parentHash - I CAN'T SEE THE SENSE. LET'S USE BLOCK HASH
+    // const ver = await data.api.rpc.state.getRuntimeVersion(data.block.parentHash); // get runtime version of the block
+    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.hash); // get runtime version of the block
 
     for (let exIdx = 0, n = data.block.extrinsics.length; exIdx < n; exIdx++) {
       const ex = data.block.extrinsics[exIdx];
@@ -424,7 +432,7 @@ console.log(maxBlock.toString());
       this.ProcessTransferEvents(data, ex, exIdx, ev, evIdx),
       this.ProcessClaimEvents(data, ex, exIdx, ev, evIdx),
       this.ProcesDustLostEvents(data, ex, exIdx, ev, evIdx),
-      this.ProcessStakingRewardEvents(data, ex, exIdx, ev, evIdx),
+      this.ProcessStakingRewardEvents(data, ex, exIdx, ev, evIdx, specVer),
       this.ProcessStakingBondedEvents(data, ex, exIdx, ev, evIdx, specVer),
       this.ProcessStakingUnbondedEvents(data, ex, exIdx, ev, evIdx),
       this.ProcessReserveRepatriatedEvents(data, ex, exIdx, ev, evIdx),
@@ -533,39 +541,40 @@ console.log(maxBlock.toString());
 
   // --------------------------------------------------------------
   // process staking.Rewarded events
-  private async ProcessStakingRewardEvents(data: TBlockData, ex: IExtrinsic, exIdx: number, ev: ISanitizedEvent, evIdx: number): Promise<void> {
-    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.parentHash);
-    let evamount = undefined;
-    let JSONobj = undefined;
+  private async ProcessStakingRewardEvents(data: TBlockData, ex: IExtrinsic, exIdx: number, ev: ISanitizedEvent, evIdx: number, specVer: number): Promise<void> {
+    let amount = undefined;
+    let payee = undefined;
 
     if (ev.method == 'staking.Reward' || ev.method == 'staking.Rewarded') {   // staking.Rewarded from runtime 9090
       if (ev.data[0].toRawType() != 'AccountId')                    // before Runtime 1050 in Kusama: type 'Balance'
         return;
-      const stashId = ev.data[0].toString();                      // AccountID of validator
+      const stashId = ev.data[0].toString();                      // AccountID of validator/nominator
       if (!this.IsValidAccountID(data.blockNr, exIdx, stashId))   // invalid stashId
         return;
 
-      let payee = stashId; // init payee
-
-//      if (ver.specVersion.toNumber() < 1001002) {
-        if (ver.specVersion.toNumber() < 1001000) {
-          evamount = BigInt(ev.data[1].toString());
-	// get reward destination from api
-	const rd = await data.apiAt.query.staking.payee(stashId);
-        if (rd.isAccount) // reward dest: an explicitely given account 
-          payee = rd.asAccount.toString();
-        else if (rd.isController) // reward dest: the controller account
-          payee = (await data.apiAt.query.staking.bonded(stashId)).toString();
+      // Get rewardDestination, handle changes in runtime metadata when returned as Option
+      const rewardDestinationRaw = await data.apiAt.query.staking.payee(stashId);
+      const rewardDestination = rewardDestinationRaw?.isSome ? rewardDestinationRaw.unwrap() : rewardDestinationRaw;
+      const typedRewardDestination = rewardDestination as PalletStakingRewardDestination;
+      
+      switch (true) {
+        case typedRewardDestination?.isController:
+          payee = (await data.apiAt.query.staking.bonded(stashId)).toString()
+          break;
+        case typedRewardDestination?.isAccount:
+          payee = typedRewardDestination.asAccount.toString();
+          break;
+        default:
+          payee = stashId; // Send rewards to the stash account
       }
-      else {
-	evamount = BigInt(ev.data[2].toString());
-	try {
-	  JSONobj = JSON.parse(ev.data[1].toString());
-	  if ('account' in JSONobj) payee = JSONobj.account;
-        }
-        catch {}
-      }	
 
+      if (specVer < 1001000) {   // Old data structure
+        amount = BigInt(ev.data[1].toString());
+      } 
+      else { // New data structure
+        amount = BigInt(ev.data[2].toString());
+      }
+    
       const tx: TTransaction = {
         chain: data.db.chain,
         id: data.block.number + '-' + exIdx + '_ev' + evIdx,
@@ -581,7 +590,7 @@ console.log(maxBlock.toString());
         authorId: undefined,
         senderId: undefined,
         recipientId: payee,
-        amount: evamount,
+        amount: amount,
         totalFee: undefined,
         feeBalances: undefined,
         feeTreasury: undefined,
@@ -601,7 +610,6 @@ console.log(maxBlock.toString());
     let event_suffix = '';
     let newspecstakedreward = false;
     let evamount = undefined;
-    const ver = await data.api.rpc.state.getRuntimeVersion(data.block.parentHash);
 
     // check if reward destination is staked
     if (method == 'staking.Reward' || method == 'staking.Rewarded') {   // staking.Rewarded from runtime 9090
@@ -611,21 +619,52 @@ console.log(maxBlock.toString());
       if (!this.IsValidAccountID(data.blockNr, exIdx, stashId))   // invalid stashId
         return;
 
-      const rd = await data.apiAt.query.staking.payee(stashId);
-      if (rd.isStaked) {
+      // This is nice and concise, but perhaps change the condition to test if isSome is defined?
+      // const rd1 = specVersion < 1001000
+      //    ? (await data.apiAt.query.staking.payee(stashId) as any).unwrap()
+      //    : await data.apiAt.query.staking.payee(stashId);
+
+      // This code is concise, readable, and the most flexible
+      const payeeRaw = await data.apiAt.query.staking.payee(stashId);
+      const payee = payeeRaw?.isSome ? payeeRaw.unwrap() : payeeRaw;
+      const typedPayee = payee as PalletStakingRewardDestination;
+
+      switch (true) {
+        case typedPayee?.isStaked:
+          console.log("Reward destination is Staked.");
+          break;
+        case typedPayee?.isController:
+          console.log("Reward destination is Controller.");
+          break;
+        case typedPayee?.isStash:
+          console.log("Reward destination is Stash.");
+          break;
+        case typedPayee?.isAccount:
+          console.log("Reward destination is an Account:", typedPayee?.asAccount.toString());
+          break;
+        case typedPayee?.isNone:
+          console.log("Reward destination is None.");
+          break;
+        default:
+          console.log("Unknown reward destination.");
+      }
+
+      if (typedPayee?.isStaked) {
         method = 'staking.Bonded';  // create a Bonded event
         event_suffix = '_1';        // id must be unique
-//        if (ver.specVersion.toNumber() >= 1001002) newspecstakedreward = true;
-        if (ver.specVersion.toNumber() >= 1001000) newspecstakedreward = true;
+        if (specVer >= 1001002) newspecstakedreward = true;
+        if (specVer >= 1001000) newspecstakedreward = true;
       }
     }
 
+    // Create a database transaction for 'staking.Bonded' transactions
+    // 'staking.Bonded' could be implied from a reward with stash set to 'Staked', or an explicit bond transaction
     if (method == 'staking.Bonded') {
       const stash = ev.data[0].toString();
       if (newspecstakedreward) {
-	evamount = BigInt(ev.data[2].toString());
+	    evamount = BigInt(ev.data[2].toString());
       } else {
-	evamount = BigInt(ev.data[1].toString());
+	    evamount = BigInt(ev.data[1].toString());
       }
 
       const amount = await this.RepairStakingRebond(data, ex, evamount, data.blockNr, stash, specVer);  // repair amount for runtime <9100
@@ -963,7 +1002,10 @@ console.log(maxBlock.toString());
 
     // the signer is the controller, we need the stash account
     const account = ex.signature.signer.toString();
-    const stakingLedgerOption = await data.apiAt.query.staking.ledger(account) as Option<StakingLedger>;
+    //    const stakingLedgerOption = await data.apiAt.query.staking.ledger(account) as Option<StakingLedger>;
+
+    // MODIFIED TO HANDLE CHANGE OF RETURN FROM FUNCTION, MIGHT FAIL IF OLD IS DIFFERENT
+    const stakingLedgerOption = await data.apiAt.query.staking.ledger(account);
     const stakingLedger = stakingLedgerOption.unwrapOr(null);
     if (!stakingLedger)
       return;
@@ -1124,26 +1166,17 @@ console.log(maxBlock.toString());
     const myBlock = tx.senderId == tx.authorId; // a special condition
 
     events.forEach((ev: ISanitizedEvent) => {
-//console.log("Event data follows");
-//console.log(ev.data[0].toString());
-// console.log(ev.data[1].toString());
-
-
 
       // the fee payment of the sender (initial fee):
       if (ev.method == 'balances.Withdraw' && ev.data[0].toString() == tx.senderId) {
         if (!ret.totalFee)  // first balances.Withdraw only
           ret.totalFee = BigInt(ev.data[1].toString());
-//console.log(ret.totalFee.toString());
-//console.log(ev.data[1].toString());
       }
       // maybe there is a refund to the sender because the final fee is lower than the initial fee:
       else if (!myBlock && ev.method == 'balances.Deposit' && ev.data[0].toString() == tx.senderId && ret.totalFee) {
         const v = BigInt(ev.data[1].toString());
         if (v <= ret.totalFee)
           ret.totalFee -= v;
-//console.log("Didn't expect to be here");
-//console.log(ret.totalFee.toString());
       }
       // fee part going to Treasury:
       else if (ev.method == 'treasury.Deposit') {
@@ -1175,9 +1208,8 @@ console.log(maxBlock.toString());
 
       // case 1: 'balances.Deposit' events which are related to an "staking.Rewarded" event
       if (ev.method == 'staking.Rewarded') {
-//        if (tx.specVersion && tx.specVersion >= 1001002) evdata = ev.data[2].toString();
         if (tx.specVersion && tx.specVersion >= 1001000) evdata = ev.data[2].toString();
-	else evdata = ev.data[1].toString();
+	    else evdata = ev.data[1].toString();
         if (last && last.method == 'balances.Deposit' && evdata == last.data[1].toString()) {
           ret.pop();
           last = undefined;
