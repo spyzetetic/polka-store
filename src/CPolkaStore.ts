@@ -120,13 +120,16 @@ export class CPolkaStore {
     const LogBlock = new CLogBlockNr(this._api, lastBlock);
 
     // scan the chain and write block data to database
-//    const start = Math.max(maxBlock, this._chainData.startBlock);
-    const start = 331000; //REMOVE TEST CODE
+    const start = Math.max(maxBlock, this._chainData.startBlock);
+//    const start = 20889489; //REMOVE TEST CODE
     for (let i = start; i <= LogBlock.LastBlock(); i++) {
-//    for (let i = start; i <= 19550999; i++) { //REMOVE TEST CODE
+//    for (let i = start; i <= 21455491; i++) { //REMOVE TEST CODE
       await this.ProcessBlockData(i);
       LogBlock.LogBlock(this._errors, i, i == LogBlock.LastBlock());
-    }
+// Add to main loop
+//const used = process.memoryUsage();
+//console.log(`Memory usage: ${Math.round(used.heapUsed / 1024 / 1024)}MB`);    
+}
     console.log('\n');  // final line break
   }
 
@@ -629,6 +632,7 @@ export class CPolkaStore {
       const payee = payeeRaw?.isSome ? payeeRaw.unwrap() : payeeRaw;
       const typedPayee = payee as PalletStakingRewardDestination;
 
+/*
       switch (true) {
         case typedPayee?.isStaked:
           console.log("Reward destination is Staked.");
@@ -648,7 +652,7 @@ export class CPolkaStore {
         default:
           console.log("Unknown reward destination.");
       }
-
+*/
       if (typedPayee?.isStaked) {
         method = 'staking.Bonded';  // create a Bonded event
         event_suffix = '_1';        // id must be unique
@@ -1147,6 +1151,9 @@ export class CPolkaStore {
       else if (ev.method == 'treasury.Deposit') {
         ret.feeTreasury = (ret.feeTreasury || BigInt(0)) + BigInt(ev.data[0].toString());
       }
+      else if (ev.method == 'balances.Deposit' && ev.data[0].toString() == '13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB') {
+        ret.feeTreasury = (ret.feeTreasury || BigInt(0)) + BigInt(ev.data[1].toString());
+      }
     });
 
     if (ret.feeBalances || ret.feeTreasury)
@@ -1166,7 +1173,6 @@ export class CPolkaStore {
     const myBlock = tx.senderId == tx.authorId; // a special condition
 
     events.forEach((ev: ISanitizedEvent) => {
-
       // the fee payment of the sender (initial fee):
       if (ev.method == 'balances.Withdraw' && ev.data[0].toString() == tx.senderId) {
         if (!ret.totalFee)  // first balances.Withdraw only
@@ -1178,14 +1184,19 @@ export class CPolkaStore {
         if (v <= ret.totalFee)
           ret.totalFee -= v;
       }
-      // fee part going to Treasury:
+      // fee part going to Treasury using 'treasury.Deposit' event method
       else if (ev.method == 'treasury.Deposit') {
         ret.feeTreasury = BigInt(ev.data[0].toString());
+      // fee part going to Treasury using 'balances.Deposit' event method
+      }
+      else if (ev.method == 'balances.Deposit' && ev.data[0].toString() == '13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB') {
+        ret.feeTreasury = BigInt(ev.data[1].toString());
       }
     });
 
     if (ret.totalFee)
       ret.feeBalances = ret.totalFee - (ret.feeTreasury || BigInt(0));
+   
     return ret;
   }
 
@@ -1200,8 +1211,9 @@ export class CPolkaStore {
 
     let last: ISanitizedEvent | undefined;
     let evdata: String | undefined;
+
     ex.events.forEach((ev: ISanitizedEvent) => {
-      if (ev.method == 'balances.Withdraw' || ev.method == 'treasury.Deposit') {
+      if (ev.method == 'balances.Withdraw') {
         ret.push(last = ev);
         return;
       }
@@ -1217,14 +1229,33 @@ export class CPolkaStore {
         return;
       }
 
-      // case 2: duplicate 'balances.Deposit' events
+      // case 2: 'balances.Deposit' events except for duplicates and any related to 'balances.Slashed' events
       if (ev.method == 'balances.Deposit') {
         if (tx.specVersion && tx.specVersion >= 9120 && tx.specVersion < 9130 &&
           last && last.method == 'balances.Deposit' && ev.data[1].toString() == last.data[1].toString())
           return;
+        else if (last 
+                    && last.method == 'balances.Slashed'
+                    && ev.data[0].toString() == '13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB'
+                    && ev.data[1].toString() == last.data[1].toString()) {
+          last = ev; return;
+        }
         else
           ret.push(last = ev);
       }
+
+      // case 3: Duplicate treasury deposits
+      if (ev.method == 'treasury.Deposit') {
+        if (last && last.method == 'balances.Deposit' && last.data[0].toString() == '13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB' && ev.data[0].toString() == last.data[1].toString())
+          return;
+        else
+          ret.push(last = ev);
+      }
+
+      // case 4: Treasury deposits
+      if (ev.method == 'balances.Slashed') { last = ev; return; }
+     
+
     });
     return ret;
   }
